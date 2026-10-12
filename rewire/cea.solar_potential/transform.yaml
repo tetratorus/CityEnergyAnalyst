@@ -1,0 +1,87 @@
+id: cea.solar_potential
+version: 0.1.0
+kind: transform
+title: City Energy Analyst - rooftop and facade photovoltaic potential per building
+description: >
+  Silver buildings + weather_hourly -> CEA radiation (Daysim) + photovoltaic, run unmodified with CEA's own
+  Singapore workflow steps (database-helper SG, archetypes-mapper, radiation, photovoltaic). Results are CEA's
+  PV_<panel>_total_buildings.csv renamed to spine ids. Shares zone, weather and id_bridge handling with
+  cea.building_demand, so both transforms give a building the same CEA name.
+upstream:
+  repo: tetratorus/CityEnergyAnalyst (fork of architecture-building-systems/CityEnergyAnalyst, CEA 4.0.0-beta.8)
+  license: MIT
+  commercial_use: allowed
+  notes: MIT licence (LICENSE, ETH Zurich A/S chair). Docker image also bundles Daysim/Radiance binaries via cea_external_tools.
+runtime:
+  type: docker
+  image: cea-rewire:local
+  command: [python, /rewire/cea.solar_potential/adapter.py, "{inputs}", "{outputs}", "{params}"]
+  notes: Build with `docker build -t cea-upstream:local .` then `docker build -t cea-rewire:local -f rewire/Dockerfile rewire` (repo root). Runs offline; no network inside the model step.
+inputs:
+  - {name: buildings, source: "silver:buildings", columns: [building_id, geometry, height_m, storeys, use_type, year_built]}
+  - {name: weather, source: "silver:weather_hourly", columns: [station_id, timestamp, dry_bulb_c, dew_point_c, rh_pct, pressure_pa, ghi_wm2, dni_wm2, dhi_wm2, wind_dir_deg, wind_speed_ms]}
+  - {name: id_bridge, source: "silver:id_bridge", optional: true}
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    zone_building_ids: {type: array, items: {type: string}, default: [], description: "buildings to simulate; empty = all"}
+    surroundings_radius_m: {type: number, minimum: 0, default: 50.0, description: "other Silver buildings within this distance of the zone shade it (CEA surroundings)"}
+    station_id: {type: [string, "null"], default: null, description: "weather_hourly station; required if more than one"}
+    floor_height_m: {type: number, exclusiveMinimum: 0, default: 3.0, description: "fills height_m from storeys (or storeys from height_m) when one is missing"}
+    default_cea_use_type: {type: string, default: MULTI_RES, enum: [MULTI_RES, SINGLE_RES, HOTEL, OFFICE, RETAIL, FOODSTORE, RESTAURANT, INDUSTRIAL, UNIVERSITY, SCHOOL, HOSPITAL, GYM, SERVERROOM, LAB, MUSEUM, LIBRARY], description: "CEA SG use type for Silver use_type OTHER or null (MULTI_RES is CEA zone-helper's own fallback)"}
+    default_year: {type: integer, default: 2000, description: "construction year when year_built is null"}
+    const_type: {type: string, default: STANDARD3, enum: [STANDARD1, STANDARD2, STANDARD3, STANDARD4, STANDARD5], description: "CEA SG construction archetype (STANDARD3 = SG database default)"}
+    terrain_elevation_m: {type: number, default: 0.0, description: "flat terrain raster written for radiation"}
+    panel_types: {type: array, minItems: 1, items: {enum: [PV1, PV2, PV3, PV4]}, default: [PV1], description: "CEA SG PV panel types (COMPONENTS/CONVERSION/PHOTOVOLTAIC_PANELS)"}
+    panel_on_roof: {type: boolean, default: true}
+    panel_on_wall: {type: boolean, default: true}
+    annual_radiation_threshold_kwh_m2: {type: number, minimum: 0, default: 800, description: "CEA: skip surfaces below this annual insolation"}
+    max_roof_coverage: {type: number, minimum: 0, maximum: 1, default: 1.0}
+outputs:
+  - name: solar_potential
+    key: [building_id, panel_type]
+    columns:
+      - {name: building_id, type: string}
+      - {name: panel_type, type: string}
+      - {name: pv_area_m2, type: float, unit: m2, description: CEA area_PV_m2}
+      - {name: pv_roof_area_m2, type: float, unit: m2, description: CEA PV_roofs_top_m2}
+      - {name: pv_wall_area_m2, type: float, unit: m2, description: "sum of CEA PV_walls_{south,north,east,west}_m2"}
+      - {name: pv_annual_kwh, type: float, unit: kWh, description: CEA E_PV_gen_kWh}
+      - {name: pv_roof_annual_kwh, type: float, unit: kWh, description: CEA PV_roofs_top_E_kWh}
+      - {name: pv_wall_annual_kwh, type: float, unit: kWh, description: "sum of CEA PV_walls_*_E_kWh"}
+      - {name: insolation_on_pv_kwh, type: float, unit: kWh, description: CEA radiation_kWh on the PV surfaces}
+  - name: id_bridge
+    description: "CEA zone name <-> building_id rows, published to Gold; rewire/tools/promote_id_bridge.py unions them into Silver id_bridge (LAYERS rule 9)"
+    key: [source, source_id]
+    columns:
+      - {name: source, type: string, description: cea_zone}
+      - {name: source_id, type: string, description: CEA zone building name}
+      - {name: hub, type: string}
+      - {name: hub_id, type: string}
+      - {name: match_method, type: string}
+      - {name: confidence, type: float}
+      - {name: source_version, type: string}
+golden:
+  - name: tanjong_pagar
+    path: golden/tanjong_pagar
+    tolerance: {rtol: 1.0e-6, atol: 1.0e-6}
+    reference: >
+      Unmodified CEA 4.0.0-beta.8 (repo Dockerfile image) via `cea workflow`, frozen by rewire/tools/make_reference.py:
+      weather from CEA's own weather-helper (bundled Singapore-Changi_1990_2010_TMY.epw), not from the adapter.
+      Same 5 Tanjong Pagar buildings + surroundings as cea.building_demand; panel type PV1.
+readiness:
+  level: 6
+  evidence:
+    - "Ran unmodified CEA 4.0.0-beta.8 (repo Dockerfile image) via `cea workflow`: database-helper SG, archetypes-mapper, radiation (Daysim), photovoltaic (PV1) on 5 Tanjong Pagar OSM buildings + 10 surroundings, Changi TMY"
+    - "Expected values frozen by rewire/tools/make_reference.py with weather from CEA's own weather-helper (not the adapter)"
+    - "`spine test` PASS (tanjong_pagar, rtol 1e-6) through the docker runtime"
+    - "Two independent CEA runs produced byte-identical PV_PV1_total_buildings.csv (deterministic)"
+  gaps:
+    - "Archetypes come only from Silver use_type/year_built + one const_type parameter; no per-building envelope/HVAC overrides"
+    - "Silver weather fields not carried (sky cover, IR sky, illuminance) and the EPW LOCATION header come from CEA's bundled Changi TMY"
+    - "Flat terrain raster; trees not modelled"
+    - "One 5-building golden case; not checked against measured consumption (e.g. BCA benchmarks)"
+    - "Image cea-rewire:local is built locally, not published to a registry; CEA 4.0.0-beta.8 is a beta release"
+    - "Golden covers panel type PV1 only; PV2-PV4, solar collectors and PVT are not wired"
+    - "Annual totals only; hourly PV profiles not exported"

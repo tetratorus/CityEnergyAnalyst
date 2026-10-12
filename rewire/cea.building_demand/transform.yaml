@@ -1,0 +1,92 @@
+id: cea.building_demand
+version: 0.1.0
+kind: transform
+title: City Energy Analyst - annual and hourly building energy demand (cooling, electricity, heating) per building
+description: >
+  The one canonical CEA transform (duct-fom bem-cea and TWA CEAAgent point here). Silver buildings become a CEA
+  zone (names bridged to building_id via id_bridge, source=cea_zone), Silver weather_hourly becomes the scenario
+  EPW, and CEA's own Singapore workflow steps run unmodified: database-helper (SG), archetypes-mapper, radiation
+  (Daysim), occupancy, demand. Results are CEA's Total_demand.csv and per-building hourly demand, renamed to spine
+  ids and kWh. Annual values are end-use system demand (CEA *_sys), not final energy after supply systems.
+upstream:
+  repo: tetratorus/CityEnergyAnalyst (fork of architecture-building-systems/CityEnergyAnalyst, CEA 4.0.0-beta.8)
+  license: MIT
+  commercial_use: allowed
+  notes: MIT licence (LICENSE, ETH Zurich A/S chair). Docker image also bundles Daysim/Radiance binaries via cea_external_tools.
+runtime:
+  type: docker
+  image: cea-rewire:local
+  command: [python, /rewire/cea.building_demand/adapter.py, "{inputs}", "{outputs}", "{params}"]
+  notes: Build with `docker build -t cea-upstream:local .` then `docker build -t cea-rewire:local -f rewire/Dockerfile rewire` (repo root). Runs offline; no network inside the model step.
+inputs:
+  - {name: buildings, source: "silver:buildings", columns: [building_id, geometry, height_m, storeys, use_type, year_built]}
+  - {name: weather, source: "silver:weather_hourly", columns: [station_id, timestamp, dry_bulb_c, dew_point_c, rh_pct, pressure_pa, ghi_wm2, dni_wm2, dhi_wm2, wind_dir_deg, wind_speed_ms]}
+  - {name: id_bridge, source: "silver:id_bridge", optional: true}
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    zone_building_ids: {type: array, items: {type: string}, default: [], description: "buildings to simulate; empty = all"}
+    surroundings_radius_m: {type: number, minimum: 0, default: 50.0, description: "other Silver buildings within this distance of the zone shade it (CEA surroundings)"}
+    station_id: {type: [string, "null"], default: null, description: "weather_hourly station; required if more than one"}
+    floor_height_m: {type: number, exclusiveMinimum: 0, default: 3.0, description: "fills height_m from storeys (or storeys from height_m) when one is missing"}
+    default_cea_use_type: {type: string, default: MULTI_RES, enum: [MULTI_RES, SINGLE_RES, HOTEL, OFFICE, RETAIL, FOODSTORE, RESTAURANT, INDUSTRIAL, UNIVERSITY, SCHOOL, HOSPITAL, GYM, SERVERROOM, LAB, MUSEUM, LIBRARY], description: "CEA SG use type for Silver use_type OTHER or null (MULTI_RES is CEA zone-helper's own fallback)"}
+    default_year: {type: integer, default: 2000, description: "construction year when year_built is null"}
+    const_type: {type: string, default: STANDARD3, enum: [STANDARD1, STANDARD2, STANDARD3, STANDARD4, STANDARD5], description: "CEA SG construction archetype (STANDARD3 = SG database default)"}
+    terrain_elevation_m: {type: number, default: 0.0, description: "flat terrain raster written for radiation"}
+outputs:
+  - name: building_energy
+    key: [building_id]
+    columns:
+      - {name: building_id, type: string}
+      - {name: gfa_m2, type: float, unit: m2, description: CEA GFA_m2}
+      - {name: conditioned_area_m2, type: float, unit: m2, description: CEA Af_m2}
+      - {name: annual_cooling_kwh, type: float, unit: kWh, description: "CEA QC_sys (space cooling + refrigeration + data centre), end use"}
+      - {name: annual_space_cooling_kwh, type: float, unit: kWh, description: CEA Qcs_sys}
+      - {name: annual_electricity_kwh, type: float, unit: kWh, description: "CEA E_sys (lighting, appliances, ventilation, auxiliaries), end use"}
+      - {name: annual_heating_kwh, type: float, unit: kWh, description: "CEA QH_sys (space heating + hot water + process)"}
+      - {name: peak_cooling_kw, type: float, unit: kW, description: CEA QC_sys0_kW}
+      - {name: peak_electricity_kw, type: float, unit: kW, description: CEA E_sys0_kW}
+      - {name: annual_total_kwh, type: float, unit: kWh, description: "annual_cooling_kwh + annual_electricity_kwh + annual_heating_kwh"}
+  - name: building_energy_hourly
+    key: [building_id, timestamp]
+    columns:
+      - {name: building_id, type: string}
+      - {name: timestamp, type: timestamp, description: "UTC, start of hour (same rows as weather_hourly)"}
+      - {name: cooling_kwh, type: float, unit: kWh, description: CEA QC_sys_kWh}
+      - {name: electricity_kwh, type: float, unit: kWh, description: CEA E_sys_kWh}
+      - {name: heating_kwh, type: float, unit: kWh, description: CEA QH_sys_kWh}
+  - name: id_bridge
+    description: "CEA zone name <-> building_id rows, published to Gold; rewire/tools/promote_id_bridge.py unions them into Silver id_bridge (LAYERS rule 9)"
+    key: [source, source_id]
+    columns:
+      - {name: source, type: string, description: cea_zone}
+      - {name: source_id, type: string, description: CEA zone building name}
+      - {name: hub, type: string}
+      - {name: hub_id, type: string}
+      - {name: match_method, type: string}
+      - {name: confidence, type: float}
+      - {name: source_version, type: string}
+golden:
+  - name: tanjong_pagar
+    path: golden/tanjong_pagar
+    tolerance: {rtol: 1.0e-6, atol: 1.0e-6}
+    reference: >
+      Unmodified CEA 4.0.0-beta.8 (repo Dockerfile image) via `cea workflow`, frozen by rewire/tools/make_reference.py:
+      weather from CEA's own weather-helper (bundled Singapore-Changi_1990_2010_TMY.epw), not from the adapter.
+      5 OSM buildings at Tanjong Pagar (3 HDB towers, 100AM podium, market) + 10 surrounding buildings.
+readiness:
+  level: 6
+  evidence:
+    - "Ran unmodified CEA 4.0.0-beta.8 (repo Dockerfile image) via `cea workflow`: database-helper SG, archetypes-mapper, radiation (Daysim), occupancy, demand on 5 Tanjong Pagar OSM buildings + 10 surroundings, Changi TMY; ~60 s"
+    - "Expected values frozen by rewire/tools/make_reference.py with weather from CEA's own weather-helper (not the adapter)"
+    - "`spine test` PASS (tanjong_pagar, rtol 1e-6) through the docker runtime: adapter rebuilds the EPW from silver weather_hourly and reproduces CEA's results"
+    - "Two independent CEA runs produced byte-identical Total_demand.csv (deterministic)"
+    - "pytest rewire/tests: id_bridge (incl. union-preserving Gold->Silver promotion on a throwaway lake), zone mapping, lossless EPW round trip, result mapping, golden"
+  gaps:
+    - "Archetypes come only from Silver use_type/year_built + one const_type parameter; no per-building envelope/HVAC overrides"
+    - "Silver weather fields not carried (sky cover, IR sky, illuminance) and the EPW LOCATION header come from CEA's bundled Changi TMY"
+    - "Flat terrain raster; trees not modelled"
+    - "One 5-building golden case; not checked against measured consumption (e.g. BCA benchmarks)"
+    - "Image cea-rewire:local is built locally, not published to a registry; CEA 4.0.0-beta.8 is a beta release"
+    - "End-use demand only (QC_sys, E_sys, QH_sys); CEA final-energy, emissions, costs and networks are not wired"
