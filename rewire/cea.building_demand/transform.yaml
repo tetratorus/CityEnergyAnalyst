@@ -57,6 +57,7 @@ outputs:
       - {name: electricity_kwh, type: float, unit: kWh, description: CEA E_sys_kWh}
       - {name: heating_kwh, type: float, unit: kWh, description: CEA QH_sys_kWh}
   - name: id_bridge
+    description: "CEA zone name <-> building_id rows, published to Gold; rewire/tools/promote_id_bridge.py unions them into Silver id_bridge (LAYERS rule 9)"
     key: [source, source_id]
     columns:
       - {name: source, type: string, description: cea_zone}
@@ -81,7 +82,7 @@ readiness:
     - "Expected values frozen by rewire/tools/make_reference.py with weather from CEA's own weather-helper (not the adapter)"
     - "`spine test` PASS (tanjong_pagar, rtol 1e-6) through the docker runtime: adapter rebuilds the EPW from silver weather_hourly and reproduces CEA's results"
     - "Two independent CEA runs produced byte-identical Total_demand.csv (deterministic)"
-    - "pytest rewire/tests: id_bridge, zone mapping, lossless EPW round trip, result mapping, golden"
+    - "pytest rewire/tests: id_bridge (incl. union-preserving Gold->Silver promotion on a throwaway lake), zone mapping, lossless EPW round trip, result mapping, golden"
   gaps:
     - "Archetypes come only from Silver use_type/year_built + one const_type parameter; no per-building envelope/HVAC overrides"
     - "Silver weather fields not carried (sky cover, IR sky, illuminance) and the EPW LOCATION header come from CEA's bundled Changi TMY"

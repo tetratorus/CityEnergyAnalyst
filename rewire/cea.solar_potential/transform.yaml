@@ -52,6 +52,7 @@ outputs:
       - {name: pv_wall_annual_kwh, type: float, unit: kWh, description: "sum of CEA PV_walls_*_E_kWh"}
       - {name: insolation_on_pv_kwh, type: float, unit: kWh, description: CEA radiation_kWh on the PV surfaces}
   - name: id_bridge
+    description: "CEA zone name <-> building_id rows, published to Gold; rewire/tools/promote_id_bridge.py unions them into Silver id_bridge (LAYERS rule 9)"
     key: [source, source_id]
     columns:
       - {name: source, type: string, description: cea_zone}
